@@ -46,6 +46,92 @@ enum class charType
 };
 
 
+struct Line
+{
+	int line;
+
+	uint64_t hash;
+
+	inline bool operator==(const Line& rhs) const
+	{
+		return (hash == rhs.hash);
+	}
+
+	inline bool operator!=(const Line& rhs) const
+	{
+		return (hash != rhs.hash);
+	}
+
+	inline bool operator==(uint64_t rhs) const
+	{
+		return (hash == rhs);
+	}
+
+	inline bool operator!=(uint64_t rhs) const
+	{
+		return (hash != rhs);
+	}
+};
+
+
+struct Word
+{
+	int pos;
+	int len;
+
+	uint64_t hash;
+
+	inline bool operator==(const Word& rhs) const
+	{
+		return (hash == rhs.hash);
+	}
+
+	inline bool operator!=(const Word& rhs) const
+	{
+		return (hash != rhs.hash);
+	}
+
+	inline bool operator==(uint64_t rhs) const
+	{
+		return (hash == rhs);
+	}
+
+	inline bool operator!=(uint64_t rhs) const
+	{
+		return (hash != rhs);
+	}
+};
+
+
+struct Char
+{
+	Char(char c, int p) : ch(c), pos(p) {}
+
+	char ch;
+	int pos;
+
+	inline bool operator==(const Char& rhs) const
+	{
+		return (ch == rhs.ch);
+	}
+
+	inline bool operator!=(const Char& rhs) const
+	{
+		return (ch != rhs.ch);
+	}
+
+	inline bool operator==(char rhs) const
+	{
+		return (ch == rhs);
+	}
+
+	inline bool operator!=(char rhs) const
+	{
+		return (ch != rhs);
+	}
+};
+
+
 struct DocCmpInfo
 {
 	int			view;
@@ -53,6 +139,7 @@ struct DocCmpInfo
 
 	int			blockDiffMask;
 
+	std::vector<Line>		lines;
 	std::unordered_set<int>	nonUniqueLines;
 };
 
@@ -125,64 +212,6 @@ struct MatchInfo
 };
 
 
-struct Char
-{
-	Char(char c, int p) : ch(c), pos(p) {}
-
-	char ch;
-	int pos;
-
-	inline bool operator==(const Char& rhs) const
-	{
-		return (ch == rhs.ch);
-	}
-
-	inline bool operator!=(const Char& rhs) const
-	{
-		return (ch != rhs.ch);
-	}
-
-	inline bool operator==(char rhs) const
-	{
-		return (ch == rhs);
-	}
-
-	inline bool operator!=(char rhs) const
-	{
-		return (ch != rhs);
-	}
-};
-
-
-struct Word
-{
-	int pos;
-	int len;
-
-	uint64_t hash;
-
-	inline bool operator==(const Word& rhs) const
-	{
-		return (hash == rhs.hash);
-	}
-
-	inline bool operator!=(const Word& rhs) const
-	{
-		return (hash != rhs.hash);
-	}
-
-	inline bool operator==(uint64_t rhs) const
-	{
-		return (hash == rhs);
-	}
-
-	inline bool operator!=(uint64_t rhs) const
-	{
-		return (hash != rhs);
-	}
-};
-
-
 const uint64_t cHashSeed = 0x84222325;
 
 inline uint64_t Hash(uint64_t hval, char letter)
@@ -195,60 +224,73 @@ inline uint64_t Hash(uint64_t hval, char letter)
 }
 
 
-std::vector<uint64_t> computeLineHashes(DocCmpInfo& doc, const CompareOptions& options)
+void swap(DocCmpInfo& lhs, DocCmpInfo& rhs)
+{
+	std::swap(lhs.view, rhs.view);
+	std::swap(lhs.section, rhs.section);
+	std::swap(lhs.blockDiffMask, rhs.blockDiffMask);
+	std::swap(lhs.lines, rhs.lines);
+	std::swap(lhs.nonUniqueLines, rhs.nonUniqueLines);
+}
+
+
+void getLines(DocCmpInfo& doc, const CompareOptions& options)
 {
 	const int monitorCancelEveryXLine = 500;
 
 	progress_ptr& progress = ProgressDlg::Get();
 
-	int lineCount = CallScintilla(doc.view, SCI_GETLENGTH, 0, 0);
+	doc.lines.clear();
 
-	if (lineCount)
-		lineCount = CallScintilla(doc.view, SCI_GETLINECOUNT, 0, 0);
+	int linesCount = CallScintilla(doc.view, SCI_GETLENGTH, 0, 0);
+
+	if (linesCount)
+		linesCount = CallScintilla(doc.view, SCI_GETLINECOUNT, 0, 0);
 	else
-		return std::vector<uint64_t>{};
+		return;
 
-	if ((doc.section.len <= 0) || (doc.section.off + doc.section.len > lineCount))
-		doc.section.len = lineCount - doc.section.off;
+	if ((doc.section.len <= 0) || (doc.section.off + doc.section.len > linesCount))
+		doc.section.len = linesCount - doc.section.off;
 
 	if (progress)
 		progress->SetMaxCount((doc.section.len / monitorCancelEveryXLine) + 1);
 
-	std::vector<uint64_t> lineHashes(doc.section.len, cHashSeed);
+	doc.lines.reserve(doc.section.len);
 
 	for (int lineNum = 0; lineNum < doc.section.len; ++lineNum)
 	{
 		if (progress && (lineNum % monitorCancelEveryXLine == 0) && !progress->Advance())
-			return std::vector<uint64_t>{};
+		{
+			doc.lines.clear();
+			return;
+		}
 
-		const int lineStart = CallScintilla(doc.view, SCI_POSITIONFROMLINE, lineNum + doc.section.off, 0);
-		const int lineEnd = CallScintilla(doc.view, SCI_GETLINEENDPOSITION, lineNum + doc.section.off, 0);
+		const int lineStart	= getLineStart(doc.view, lineNum + doc.section.off);
+		const int lineEnd	= getLineEnd(doc.view, lineNum + doc.section.off);
+
+		Line newLine;
+		newLine.hash = cHashSeed;
+		newLine.line = lineNum + doc.section.off;
 
 		if (lineEnd - lineStart)
 		{
 			std::vector<char> line = getText(doc.view, lineStart, lineEnd);
-			const int lineLen = static_cast<int>(line.size()) - 1;
 
 			if (options.ignoreCase)
 				toLowerCase(line);
 
-			for (int i = 0; i < lineLen; ++i)
+			for (int i = 0; i < lineEnd - lineStart; ++i)
 			{
 				if (options.ignoreSpaces && (line[i] == ' ' || line[i] == '\t'))
 					continue;
 
-				lineHashes[lineNum] = Hash(lineHashes[lineNum], line[i]);
+				newLine.hash = Hash(newLine.hash, line[i]);
 			}
 		}
-	}
 
-	if (doc.section.len && lineHashes.back() == cHashSeed)
-	{
-		lineHashes.pop_back();
-		--doc.section.len;
+		if (!options.ignoreEmptyLines || newLine.hash != cHashSeed)
+			doc.lines.emplace_back(newLine);
 	}
-
-	return lineHashes;
 }
 
 
@@ -273,6 +315,8 @@ std::vector<Char> getSectionChars(int view, int secStart, int secEnd, const Comp
 		std::vector<char> line = getText(view, secStart, secEnd);
 		const int lineLen = static_cast<int>(line.size()) - 1;
 
+		chars.reserve(lineLen);
+
 		if (options.ignoreCase)
 			toLowerCase(line);
 
@@ -287,18 +331,19 @@ std::vector<Char> getSectionChars(int view, int secStart, int secEnd, const Comp
 }
 
 
-std::vector<std::vector<Char>> getChars(int view, int lineOffset, int lineCount, const CompareOptions& options)
+std::vector<std::vector<Char>> getChars(const DocCmpInfo& doc, int lineOffset, int linesCount,
+		const CompareOptions& options)
 {
-	std::vector<std::vector<Char>> chars(lineCount);
+	std::vector<std::vector<Char>> chars(linesCount);
 
-	for (int lineNum = 0; lineNum < lineCount; ++lineNum)
+	for (int lineNum = 0; lineNum < linesCount; ++lineNum)
 	{
-		const int docLineNum = lineNum + lineOffset;
-		const int docLineStart = CallScintilla(view, SCI_POSITIONFROMLINE, docLineNum, 0);
-		const int docLineEnd = CallScintilla(view, SCI_GETLINEENDPOSITION, docLineNum, 0);
+		const int docLineNum	= doc.lines[lineNum + lineOffset].line;
+		const int docLineStart	= getLineStart(doc.view, docLineNum);
+		const int docLineEnd	= getLineEnd(doc.view, docLineNum);
 
 		if (docLineEnd - docLineStart)
-			chars[lineNum] = getSectionChars(view, docLineStart, docLineEnd, options);
+			chars[lineNum] = getSectionChars(doc.view, docLineStart, docLineEnd, options);
 	}
 
 	return chars;
@@ -309,8 +354,8 @@ std::vector<Word> getLineWords(int view, int lineNum, const CompareOptions& opti
 {
 	std::vector<Word> words;
 
-	const int docLineStart = CallScintilla(view, SCI_POSITIONFROMLINE, lineNum, 0);
-	const int docLineEnd = CallScintilla(view, SCI_GETLINEENDPOSITION, lineNum, 0);
+	const int docLineStart	= getLineStart(view, lineNum);
+	const int docLineEnd	= getLineEnd(view, lineNum);
 
 	if (docLineEnd - docLineStart)
 	{
@@ -339,7 +384,7 @@ std::vector<Word> getLineWords(int view, int lineNum, const CompareOptions& opti
 			else
 			{
 				if (!options.ignoreSpaces || currentWordType != charType::SPACECHAR)
-					words.push_back(word);
+					words.emplace_back(word);
 
 				currentWordType = newWordType;
 
@@ -350,7 +395,7 @@ std::vector<Word> getLineWords(int view, int lineNum, const CompareOptions& opti
 		}
 
 		if (!options.ignoreSpaces || currentWordType != charType::SPACECHAR)
-			words.push_back(word);
+			words.emplace_back(word);
 	}
 
 	return words;
@@ -358,27 +403,25 @@ std::vector<Word> getLineWords(int view, int lineNum, const CompareOptions& opti
 
 
 // Scan for the best single matching block in the other file
-void findBestMatch(const CompareInfo& cmpInfo,
-		const std::vector<uint64_t>& lineHashes1, const std::vector<uint64_t>& lineHashes2,
-		const diffInfo& lookupDiff, int lookupOff, MatchInfo& mi)
+void findBestMatch(const CompareInfo& cmpInfo, const diffInfo& lookupDiff, int lookupOff, MatchInfo& mi)
 {
 	mi.matchLen		= 0;
 	mi.matchDiff	= nullptr;
 
-	const std::vector<uint64_t>* pLookupLines;
-	const std::vector<uint64_t>* pMatchLines;
+	const std::vector<Line>* pLookupLines;
+	const std::vector<Line>* pMatchLines;
 	diff_type matchType;
 
 	if (lookupDiff.type == diff_type::DIFF_IN_1)
 	{
-		pLookupLines	= &lineHashes1;
-		pMatchLines		= &lineHashes2;
+		pLookupLines	= &cmpInfo.doc1.lines;
+		pMatchLines		= &cmpInfo.doc2.lines;
 		matchType		= diff_type::DIFF_IN_2;
 	}
 	else
 	{
-		pLookupLines	= &lineHashes2;
-		pMatchLines		= &lineHashes1;
+		pLookupLines	= &cmpInfo.doc2.lines;
+		pMatchLines		= &cmpInfo.doc1.lines;
 		matchType		= diff_type::DIFF_IN_1;
 	}
 
@@ -445,9 +488,7 @@ void findBestMatch(const CompareInfo& cmpInfo,
 
 
 // Recursively resolve the best match
-bool resolveMatch(const CompareInfo& cmpInfo,
-		const std::vector<uint64_t>& lineHashes1, const std::vector<uint64_t>& lineHashes2,
-		diffInfo& lookupDiff, int lookupOff, MatchInfo& lookupMi)
+bool resolveMatch(const CompareInfo& cmpInfo, diffInfo& lookupDiff, int lookupOff, MatchInfo& lookupMi)
 {
 	bool ret = false;
 
@@ -456,7 +497,7 @@ bool resolveMatch(const CompareInfo& cmpInfo,
 		lookupOff = lookupMi.matchOff + (lookupOff - lookupMi.lookupOff);
 
 		MatchInfo reverseMi;
-		findBestMatch(cmpInfo, lineHashes1, lineHashes2, *(lookupMi.matchDiff), lookupOff, reverseMi);
+		findBestMatch(cmpInfo, *(lookupMi.matchDiff), lookupOff, reverseMi);
 
 		if (reverseMi.matchDiff == &lookupDiff)
 		{
@@ -466,7 +507,7 @@ bool resolveMatch(const CompareInfo& cmpInfo,
 		}
 		else if (reverseMi.matchDiff)
 		{
-			ret = resolveMatch(cmpInfo, lineHashes1, lineHashes2, *(lookupMi.matchDiff), lookupOff, reverseMi);
+			ret = resolveMatch(cmpInfo, *(lookupMi.matchDiff), lookupOff, reverseMi);
 			lookupMi.matchLen = 0;
 		}
 	}
@@ -475,8 +516,7 @@ bool resolveMatch(const CompareInfo& cmpInfo,
 }
 
 
-void findMoves(CompareInfo& cmpInfo,
-		const std::vector<uint64_t>& lineHashes1, const std::vector<uint64_t>& lineHashes2)
+void findMoves(CompareInfo& cmpInfo)
 {
 	// LOGD("FIND MOVES\n");
 
@@ -506,9 +546,9 @@ void findMoves(CompareInfo& cmpInfo,
 				// LOGD("line offset: " + std::to_string(lookupEi) + "\n");
 
 				MatchInfo mi;
-				findBestMatch(cmpInfo, lineHashes1, lineHashes2, lookupDiff, lookupEi, mi);
+				findBestMatch(cmpInfo, lookupDiff, lookupEi, mi);
 
-				if (resolveMatch(cmpInfo, lineHashes1, lineHashes2, lookupDiff, lookupEi, mi))
+				if (resolveMatch(cmpInfo, lookupDiff, lookupEi, mi))
 				{
 					repeat = true;
 
@@ -525,33 +565,24 @@ void findMoves(CompareInfo& cmpInfo,
 }
 
 
-void findUniqueLines(CompareInfo& cmpInfo,
-		const std::vector<uint64_t>& lineHashes1, const std::vector<uint64_t>& lineHashes2)
+void findUniqueLines(CompareInfo& cmpInfo)
 {
 	std::unordered_map<uint64_t, std::vector<int>> doc1LinesMap;
 
-	int sectionEnd = cmpInfo.doc1.section.off + cmpInfo.doc1.section.len;
-	if (sectionEnd > static_cast<int>(lineHashes1.size()))
-		sectionEnd = static_cast<int>(lineHashes1.size());
-
-	for (int i = cmpInfo.doc1.section.off; i < sectionEnd; ++i)
+	for (const auto& line: cmpInfo.doc1.lines)
 	{
-		auto insertPair = doc1LinesMap.emplace(lineHashes1[i], std::vector<int>{i});
+		auto insertPair = doc1LinesMap.emplace(line.hash, std::vector<int>{line.line});
 		if (!insertPair.second)
-			insertPair.first->second.emplace_back(i);
+			insertPair.first->second.emplace_back(line.line);
 	}
 
-	sectionEnd = cmpInfo.doc2.section.off + cmpInfo.doc2.section.len;
-	if (sectionEnd > static_cast<int>(lineHashes2.size()))
-		sectionEnd = static_cast<int>(lineHashes2.size());
-
-	for (int i = cmpInfo.doc2.section.off; i < sectionEnd; ++i)
+	for (const auto& line: cmpInfo.doc2.lines)
 	{
-		std::unordered_map<uint64_t, std::vector<int>>::iterator doc1it = doc1LinesMap.find(lineHashes2[i]);
+		auto doc1it = doc1LinesMap.find(line.hash);
 
 		if (doc1it != doc1LinesMap.end())
 		{
-			cmpInfo.doc2.nonUniqueLines.emplace(i);
+			cmpInfo.doc2.nonUniqueLines.emplace(line.line);
 
 			auto insertPair = cmpInfo.doc1.nonUniqueLines.emplace(doc1it->second[0]);
 			if (insertPair.second)
@@ -578,13 +609,13 @@ void compareLines(const DocCmpInfo& doc1, const DocCmpInfo& doc2, diffInfo& bloc
 		int line1 = lm.first;
 		int line2 = lm.second.second;
 
-		LOGD("CompareLines " + std::to_string(blockDiff1.off + line1 + 1) + " and " +
-				std::to_string(blockDiff2.off + line2 + 1) + "\n");
+		LOGD("CompareLines " + std::to_string(doc1.lines[blockDiff1.off + line1].line + 1) + " and " +
+				std::to_string(doc2.lines[blockDiff2.off + line2].line + 1) + "\n");
 
 		lastLine2 = line2;
 
-		const std::vector<Word> lineWords1 = getLineWords(doc1.view, blockDiff1.off + line1, options);
-		const std::vector<Word> lineWords2 = getLineWords(doc2.view, blockDiff2.off + line2, options);
+		const std::vector<Word> lineWords1 = getLineWords(doc1.view, doc1.lines[blockDiff1.off + line1].line, options);
+		const std::vector<Word> lineWords2 = getLineWords(doc2.view, doc2.lines[blockDiff2.off + line2].line, options);
 
 		const auto* pLine1 = &lineWords1;
 		const auto* pLine2 = &lineWords2;
@@ -614,8 +645,8 @@ void compareLines(const DocCmpInfo& doc1, const DocCmpInfo& doc2, diffInfo& bloc
 		pBlockDiff1->info.changedLines.emplace_back(line1);
 		pBlockDiff2->info.changedLines.emplace_back(line2);
 
-		const int lineOff1 = CallScintilla(pDoc1->view, SCI_POSITIONFROMLINE, line1 + pBlockDiff1->off, 0);
-		const int lineOff2 = CallScintilla(pDoc2->view, SCI_POSITIONFROMLINE, line2 + pBlockDiff2->off, 0);
+		const int lineOff1 = getLineStart(pDoc1->view, pDoc1->lines[line1 + pBlockDiff1->off].line);
+		const int lineOff2 = getLineStart(pDoc2->view, pDoc2->lines[line2 + pBlockDiff2->off].line);
 
 		int lineLen1 = 0;
 		int lineLen2 = 0;
@@ -632,7 +663,21 @@ void compareLines(const DocCmpInfo& doc1, const DocCmpInfo& doc2, diffInfo& bloc
 		{
 			const auto& ld = lineDiffs[i];
 
-			if (ld.type == diff_type::DIFF_IN_1)
+			if (ld.type == diff_type::DIFF_MATCH)
+			{
+				for (int j = 0; j < ld.len; ++j)
+					totalLineMatchLen += (*pLine1)[ld.off + j].len;
+			}
+			else if (ld.type == diff_type::DIFF_IN_2)
+			{
+				section_t change;
+
+				change.off = (*pLine2)[ld.off].pos;
+				change.len = (*pLine2)[ld.off + ld.len - 1].pos + (*pLine2)[ld.off + ld.len - 1].len - change.off;
+
+				pBlockDiff2->info.changedLines.back().changes.emplace_back(change);
+			}
+			else
 			{
 				// Resolve words mismatched DIFF_IN_1 / DIFF_IN_2 pairs to find possible sub-word similarities
 				if (options.charPrecision &&
@@ -652,10 +697,10 @@ void compareLines(const DocCmpInfo& doc1, const DocCmpInfo& doc2, diffInfo& bloc
 							getSectionChars(pDoc2->view, off2 + lineOff2, end2 + lineOff2, options);
 
 					LOGD("Compare sections " +
-							std::to_string(off1 + lineOff1 + 1) + " to " +
-							std::to_string(end1 + lineOff1 + 1) + " and " +
-							std::to_string(off2 + lineOff2 + 1) + " to " +
-							std::to_string(end2 + lineOff2 + 1) + "\n");
+							std::to_string(off1 + 1) + " to " +
+							std::to_string(end1 + 1) + " and " +
+							std::to_string(off2 + 1) + " to " +
+							std::to_string(end2 + 1) + "\n");
 
 					const auto* pSec1 = &sec1;
 					const auto* pSec2 = &sec2;
@@ -765,7 +810,7 @@ void compareLines(const DocCmpInfo& doc1, const DocCmpInfo& doc2, diffInfo& bloc
 
 								totalLineMatchLen += startMatch + endMatch;
 
-								LOGD("Match beginning and end\n");
+								LOGD("Matched beginning and end\n");
 
 								++i;
 								continue;
@@ -785,20 +830,6 @@ void compareLines(const DocCmpInfo& doc1, const DocCmpInfo& doc2, diffInfo& bloc
 
 				pBlockDiff1->info.changedLines.back().changes.emplace_back(change);
 			}
-			else if (ld.type == diff_type::DIFF_IN_2)
-			{
-				section_t change;
-
-				change.off = (*pLine2)[ld.off].pos;
-				change.len = (*pLine2)[ld.off + ld.len - 1].pos + (*pLine2)[ld.off + ld.len - 1].len - change.off;
-
-				pBlockDiff2->info.changedLines.back().changes.emplace_back(change);
-			}
-			else
-			{
-				for (int j = 0; j < ld.len; ++j)
-					totalLineMatchLen += (*pLine1)[ld.off + j].len;
-			}
 		}
 
 		// Not enough portion of the lines matches - consider them totally different
@@ -814,8 +845,8 @@ void compareLines(const DocCmpInfo& doc1, const DocCmpInfo& doc2, diffInfo& bloc
 void compareBlocks(const DocCmpInfo& doc1, const DocCmpInfo& doc2, diffInfo& blockDiff1, diffInfo& blockDiff2,
 		const CompareOptions& options)
 {
-	const std::vector<std::vector<Char>> chunk1 = getChars(doc1.view, blockDiff1.off, blockDiff1.len, options);
-	const std::vector<std::vector<Char>> chunk2 = getChars(doc2.view, blockDiff2.off, blockDiff2.len, options);
+	const std::vector<std::vector<Char>> chunk1 = getChars(doc1, blockDiff1.off, blockDiff1.len, options);
+	const std::vector<std::vector<Char>> chunk2 = getChars(doc2, blockDiff2.off, blockDiff2.len, options);
 
 	const int linesCount1 = static_cast<int>(chunk1.size());
 	const int linesCount2 = static_cast<int>(chunk2.size());
@@ -945,12 +976,13 @@ void compareBlocks(const DocCmpInfo& doc1, const DocCmpInfo& doc2, diffInfo& blo
 }
 
 
-void markSection(const diffInfo& bd, const DocCmpInfo& doc)
+void markSection(const DocCmpInfo& doc, const diffInfo& bd)
 {
 	const int endOff = doc.section.off + doc.section.len;
 
 	for (int i = doc.section.off, line = bd.off + doc.section.off; i < endOff; ++i, ++line)
 	{
+		int docLine = doc.lines[line].line;
 		int movedLen = bd.info.movedSection(i);
 
 		if (movedLen > doc.section.len)
@@ -958,27 +990,39 @@ void markSection(const diffInfo& bd, const DocCmpInfo& doc)
 
 		if (movedLen == 0)
 		{
-			int mark = doc.blockDiffMask;
 
-			if (doc.nonUniqueLines.find(line) != doc.nonUniqueLines.end())
-				mark = (mark == MARKER_MASK_ADDED) ? MARKER_MASK_ADDED_LOCAL : MARKER_MASK_REMOVED_LOCAL;
+			for (++i, ++line; (i < endOff) && (bd.info.movedSection(i) == 0); ++i, ++line);
 
-			CallScintilla(doc.view, SCI_MARKERADDSET, line, mark);
+			--i;
+			--line;
+
+			const int endDocLine = doc.lines[line].line + 1;
+
+			for (; docLine < endDocLine; ++docLine)
+			{
+				const int mark = (doc.nonUniqueLines.find(docLine) == doc.nonUniqueLines.end()) ? doc.blockDiffMask :
+						(doc.blockDiffMask == MARKER_MASK_ADDED) ? MARKER_MASK_ADDED_LOCAL : MARKER_MASK_REMOVED_LOCAL;
+
+				CallScintilla(doc.view, SCI_MARKERADDSET, docLine, mark);
+			}
 		}
 		else if (movedLen == 1)
 		{
-			CallScintilla(doc.view, SCI_MARKERADDSET, line, MARKER_MASK_MOVED_LINE);
+			CallScintilla(doc.view, SCI_MARKERADDSET, docLine, MARKER_MASK_MOVED_LINE);
 		}
 		else
 		{
 			i += --movedLen;
+			line += movedLen;
 
-			CallScintilla(doc.view, SCI_MARKERADDSET, line, MARKER_MASK_MOVED_BEGIN);
+			const int endDocLine = doc.lines[line].line;
 
-			for (--movedLen, ++line; movedLen; --movedLen, ++line)
-				CallScintilla(doc.view, SCI_MARKERADDSET, line, MARKER_MASK_MOVED_MID);
+			CallScintilla(doc.view, SCI_MARKERADDSET, docLine, MARKER_MASK_MOVED_BEGIN);
 
-			CallScintilla(doc.view, SCI_MARKERADDSET, line, MARKER_MASK_MOVED_END);
+			for (++docLine; docLine < endDocLine; ++docLine)
+				CallScintilla(doc.view, SCI_MARKERADDSET, docLine, MARKER_MASK_MOVED_MID);
+
+			CallScintilla(doc.view, SCI_MARKERADDSET, docLine, MARKER_MASK_MOVED_END);
 		}
 	}
 }
@@ -986,8 +1030,8 @@ void markSection(const diffInfo& bd, const DocCmpInfo& doc)
 
 void markLineDiffs(const CompareInfo& cmpInfo, const diffInfo& bd, int lineIdx)
 {
-	int line = bd.off + bd.info.changedLines[lineIdx].line;
-	int linePos = CallScintilla(cmpInfo.doc1.view, SCI_POSITIONFROMLINE, line, 0);
+	int line = cmpInfo.doc1.lines[bd.off + bd.info.changedLines[lineIdx].line].line;
+	int linePos = getLineStart(cmpInfo.doc1.view, line);
 
 	for (const auto& change: bd.info.changedLines[lineIdx].changes)
 		markTextAsChanged(cmpInfo.doc1.view, linePos + change.off, change.len);
@@ -996,8 +1040,8 @@ void markLineDiffs(const CompareInfo& cmpInfo, const diffInfo& bd, int lineIdx)
 			cmpInfo.doc1.nonUniqueLines.find(line) == cmpInfo.doc1.nonUniqueLines.end() ?
 			MARKER_MASK_CHANGED : MARKER_MASK_CHANGED_LOCAL);
 
-	line = bd.info.matchBlock->off + bd.info.matchBlock->info.changedLines[lineIdx].line;
-	linePos = CallScintilla(cmpInfo.doc2.view, SCI_POSITIONFROMLINE, line, 0);
+	line = cmpInfo.doc2.lines[bd.info.matchBlock->off + bd.info.matchBlock->info.changedLines[lineIdx].line].line;
+	linePos = getLineStart(cmpInfo.doc2.view, line);
 
 	for (const auto& change: bd.info.matchBlock->info.changedLines[lineIdx].changes)
 		markTextAsChanged(cmpInfo.doc2.view, linePos + change.off, change.len);
@@ -1019,6 +1063,8 @@ bool markAllDiffs(CompareInfo& cmpInfo, AlignmentInfo_t& alignmentInfo)
 	if (progress)
 		progress->SetMaxCount(blockDiffSize);
 
+	std::pair<int, int> alignLines {0, 0};
+
 	AlignmentPair alignPair;
 
 	AlignmentViewData* pMainAlignData	= &alignPair.main;
@@ -1027,9 +1073,6 @@ bool markAllDiffs(CompareInfo& cmpInfo, AlignmentInfo_t& alignmentInfo)
 	// Make sure pMainAlignData is linked to doc1
 	if (cmpInfo.doc1.view == SUB_VIEW)
 		std::swap(pMainAlignData, pSubAlignData);
-
-	pMainAlignData->line	= cmpInfo.doc1.section.off;
-	pSubAlignData->line		= cmpInfo.doc2.section.off;
 
 	for (int i = 0; i < blockDiffSize; ++i)
 	{
@@ -1040,23 +1083,33 @@ bool markAllDiffs(CompareInfo& cmpInfo, AlignmentInfo_t& alignmentInfo)
 			pMainAlignData->diffMask	= 0;
 			pSubAlignData->diffMask		= 0;
 
-			alignmentInfo.push_back(alignPair);
+			pMainAlignData->line = (alignLines.first) ?
+					cmpInfo.doc1.lines[alignLines.first - 1].line + 1 : cmpInfo.doc1.lines.front().line;
+			pSubAlignData->line = (alignLines.second) ?
+					cmpInfo.doc2.lines[alignLines.second - 1].line + 1 : cmpInfo.doc2.lines.front().line;
 
-			pMainAlignData->line	+= bd.len;
-			pSubAlignData->line		+= bd.len;
+			alignmentInfo.emplace_back(alignPair);
+
+			alignLines.first	+= bd.len;
+			alignLines.second	+= bd.len;
 		}
 		else if (bd.type == diff_type::DIFF_IN_2)
 		{
 			cmpInfo.doc2.section.off = 0;
 			cmpInfo.doc2.section.len = bd.len;
-			markSection(bd, cmpInfo.doc2);
+			markSection(cmpInfo.doc2, bd);
 
 			pMainAlignData->diffMask	= 0;
 			pSubAlignData->diffMask		= cmpInfo.doc2.blockDiffMask;
 
-			alignmentInfo.push_back(alignPair);
+			pMainAlignData->line = (alignLines.first) ?
+					cmpInfo.doc1.lines[alignLines.first - 1].line + 1 : cmpInfo.doc1.lines.front().line;
+			pSubAlignData->line = (alignLines.second < (int)cmpInfo.doc2.lines.size()) ?
+					cmpInfo.doc2.lines[alignLines.second].line : cmpInfo.doc2.lines.back().line + 1;
 
-			pSubAlignData->line += bd.len;
+			alignmentInfo.emplace_back(alignPair);
+
+			alignLines.second += bd.len;
 		}
 		else if (bd.type == diff_type::DIFF_IN_1)
 		{
@@ -1077,33 +1130,43 @@ bool markAllDiffs(CompareInfo& cmpInfo, AlignmentInfo_t& alignmentInfo)
 						pMainAlignData->diffMask	= cmpInfo.doc1.section.len ? cmpInfo.doc1.blockDiffMask : 0;
 						pSubAlignData->diffMask		= cmpInfo.doc2.section.len ? cmpInfo.doc2.blockDiffMask : 0;
 
-						alignmentInfo.push_back(alignPair);
+						pMainAlignData->line = (alignLines.first < (int)cmpInfo.doc1.lines.size()) ?
+								cmpInfo.doc1.lines[alignLines.first].line : cmpInfo.doc1.lines.back().line + 1;
+						pSubAlignData->line = (alignLines.second < (int)cmpInfo.doc2.lines.size()) ?
+								cmpInfo.doc2.lines[alignLines.second].line : cmpInfo.doc2.lines.back().line + 1;
+
+						alignmentInfo.emplace_back(alignPair);
 
 						if (cmpInfo.doc1.section.len)
 						{
-							markSection(bd, cmpInfo.doc1);
-							pMainAlignData->line += cmpInfo.doc1.section.len;
+							markSection(cmpInfo.doc1, bd);
+							alignLines.first += cmpInfo.doc1.section.len;
 						}
 
 						if (cmpInfo.doc2.section.len)
 						{
-							markSection(*bd.info.matchBlock, cmpInfo.doc2);
-							pSubAlignData->line += cmpInfo.doc2.section.len;
+							markSection(cmpInfo.doc2, *bd.info.matchBlock);
+							alignLines.second += cmpInfo.doc2.section.len;
 						}
 					}
 
 					pMainAlignData->diffMask	= MARKER_MASK_CHANGED;
 					pSubAlignData->diffMask		= MARKER_MASK_CHANGED;
 
-					alignmentInfo.push_back(alignPair);
+					pMainAlignData->line = (alignLines.first < (int)cmpInfo.doc1.lines.size()) ?
+							cmpInfo.doc1.lines[alignLines.first].line : cmpInfo.doc1.lines.back().line + 1;
+					pSubAlignData->line = (alignLines.second < (int)cmpInfo.doc2.lines.size()) ?
+							cmpInfo.doc2.lines[alignLines.second].line : cmpInfo.doc2.lines.back().line + 1;
+
+					alignmentInfo.emplace_back(alignPair);
 
 					markLineDiffs(cmpInfo, bd, j);
 
 					cmpInfo.doc1.section.off = bd.info.changedLines[j].line + 1;
 					cmpInfo.doc2.section.off = bd.info.matchBlock->info.changedLines[j].line + 1;
 
-					++(pMainAlignData->line);
-					++(pSubAlignData->line);
+					++alignLines.first;
+					++alignLines.second;
 				}
 
 				cmpInfo.doc1.section.len = bd.len - cmpInfo.doc1.section.off;
@@ -1114,18 +1177,23 @@ bool markAllDiffs(CompareInfo& cmpInfo, AlignmentInfo_t& alignmentInfo)
 					pMainAlignData->diffMask	= cmpInfo.doc1.section.len ? cmpInfo.doc1.blockDiffMask : 0;
 					pSubAlignData->diffMask		= cmpInfo.doc2.section.len ? cmpInfo.doc2.blockDiffMask : 0;
 
-					alignmentInfo.push_back(alignPair);
+					pMainAlignData->line = (alignLines.first < (int)cmpInfo.doc1.lines.size()) ?
+							cmpInfo.doc1.lines[alignLines.first].line : cmpInfo.doc1.lines.back().line + 1;
+					pSubAlignData->line = (alignLines.second < (int)cmpInfo.doc2.lines.size()) ?
+							cmpInfo.doc2.lines[alignLines.second].line : cmpInfo.doc2.lines.back().line + 1;
+
+					alignmentInfo.emplace_back(alignPair);
 
 					if (cmpInfo.doc1.section.len)
 					{
-						markSection(bd, cmpInfo.doc1);
-						pMainAlignData->line += cmpInfo.doc1.section.len;
+						markSection(cmpInfo.doc1, bd);
+						alignLines.first += cmpInfo.doc1.section.len;
 					}
 
 					if (cmpInfo.doc2.section.len)
 					{
-						markSection(*bd.info.matchBlock, cmpInfo.doc2);
-						pSubAlignData->line += cmpInfo.doc2.section.len;
+						markSection(cmpInfo.doc2, *bd.info.matchBlock);
+						alignLines.second += cmpInfo.doc2.section.len;
 					}
 				}
 
@@ -1135,14 +1203,19 @@ bool markAllDiffs(CompareInfo& cmpInfo, AlignmentInfo_t& alignmentInfo)
 			{
 				cmpInfo.doc1.section.off = 0;
 				cmpInfo.doc1.section.len = bd.len;
-				markSection(bd, cmpInfo.doc1);
+				markSection(cmpInfo.doc1, bd);
 
 				pMainAlignData->diffMask	= cmpInfo.doc1.blockDiffMask;
 				pSubAlignData->diffMask		= 0;
 
-				alignmentInfo.push_back(alignPair);
+				pMainAlignData->line = (alignLines.first < (int)cmpInfo.doc1.lines.size()) ?
+						cmpInfo.doc1.lines[alignLines.first].line : cmpInfo.doc1.lines.back().line + 1;
+				pSubAlignData->line = (alignLines.second) ?
+						cmpInfo.doc2.lines[alignLines.second - 1].line + 1 : cmpInfo.doc2.lines.front().line;
 
-				pMainAlignData->line += bd.len;
+				alignmentInfo.emplace_back(alignPair);
+
+				alignLines.first += bd.len;
 			}
 		}
 
@@ -1155,7 +1228,12 @@ bool markAllDiffs(CompareInfo& cmpInfo, AlignmentInfo_t& alignmentInfo)
 		pMainAlignData->diffMask	= 0;
 		pSubAlignData->diffMask		= 0;
 
-		alignmentInfo.push_back(alignPair);
+		pMainAlignData->line = (alignLines.first < (int)cmpInfo.doc1.lines.size()) ?
+				cmpInfo.doc1.lines[alignLines.first].line : cmpInfo.doc1.lines.back().line + 1;
+		pSubAlignData->line = (alignLines.second < (int)cmpInfo.doc2.lines.size()) ?
+				cmpInfo.doc2.lines[alignLines.second].line : cmpInfo.doc2.lines.back().line + 1;
+
+		alignmentInfo.emplace_back(alignPair);
 	}
 
 	if (progress && !progress->NextPhase())
@@ -1188,27 +1266,21 @@ CompareResult runCompare(const CompareOptions& options, AlignmentInfo_t& alignme
 	cmpInfo.doc1.blockDiffMask = (options.oldFileViewId == MAIN_VIEW) ? MARKER_MASK_REMOVED : MARKER_MASK_ADDED;
 	cmpInfo.doc2.blockDiffMask = (options.oldFileViewId == MAIN_VIEW) ? MARKER_MASK_ADDED : MARKER_MASK_REMOVED;
 
-	const std::vector<uint64_t> doc1LineHashes = computeLineHashes(cmpInfo.doc1, options);
+	getLines(cmpInfo.doc1, options);
 
 	if (progress && !progress->NextPhase())
 		return CompareResult::COMPARE_CANCELLED;
 
-	const std::vector<uint64_t> doc2LineHashes = computeLineHashes(cmpInfo.doc2, options);
+	getLines(cmpInfo.doc2, options);
 
 	if (progress && !progress->NextPhase())
 		return CompareResult::COMPARE_CANCELLED;
 
-	const std::vector<uint64_t>* pLineHashes1 = &doc1LineHashes;
-	const std::vector<uint64_t>* pLineHashes2 = &doc2LineHashes;
-
-	auto diffRes = DiffCalc<uint64_t, blockDiffInfo>(doc1LineHashes, doc2LineHashes)();
+	auto diffRes = DiffCalc<Line, blockDiffInfo>(cmpInfo.doc1.lines, cmpInfo.doc2.lines)();
 	cmpInfo.blockDiffs = std::move(diffRes.first);
 
 	if (diffRes.second)
-	{
-		std::swap(pLineHashes1, pLineHashes2);
-		std::swap(cmpInfo.doc1, cmpInfo.doc2);
-	}
+		swap(cmpInfo.doc1, cmpInfo.doc2);
 
 	PRINT_DIFFS("LINE DIFFS", cmpInfo.blockDiffs);
 
@@ -1217,44 +1289,31 @@ CompareResult runCompare(const CompareOptions& options, AlignmentInfo_t& alignme
 	if (blockDiffsSize == 0 || (blockDiffsSize == 1 && cmpInfo.blockDiffs[0].type == diff_type::DIFF_MATCH))
 		return CompareResult::COMPARE_MATCH;
 
-	findUniqueLines(cmpInfo, *pLineHashes1, *pLineHashes2);
+	findUniqueLines(cmpInfo);
 
 	if (options.detectMoves)
-		findMoves(cmpInfo, *pLineHashes1, *pLineHashes2);
-
-	if (cmpInfo.doc1.section.off || cmpInfo.doc2.section.off)
-	{
-		for (auto& bd: cmpInfo.blockDiffs)
-		{
-			if (bd.type == diff_type::DIFF_IN_1 || bd.type == diff_type::DIFF_MATCH)
-				bd.off += cmpInfo.doc1.section.off;
-			else if (bd.type == diff_type::DIFF_IN_2)
-				bd.off += cmpInfo.doc2.section.off;
-		}
-	}
+		// findMoves(cmpInfo);
 
 	if (progress && !progress->NextPhase())
 		return CompareResult::COMPARE_CANCELLED;
 
 	if (progress)
-		progress->SetMaxCount(blockDiffsSize);
+		progress->SetMaxCount(blockDiffsSize - 1);
 
 	// Do block compares
-	for (int i = 0; i < blockDiffsSize; ++i)
+	for (int i = 1; i < blockDiffsSize; ++i)
 	{
-		if (cmpInfo.blockDiffs[i].type == diff_type::DIFF_IN_2)
+		// Check if the DIFF_IN_1 / DIFF_IN_2 pair includes changed lines or it's a completely replaced block
+		if ((cmpInfo.blockDiffs[i].type == diff_type::DIFF_IN_2) &&
+			(cmpInfo.blockDiffs[i - 1].type == diff_type::DIFF_IN_1))
 		{
-			// Check if the DIFF_IN_1 / DIFF_IN_2 pair includes changed lines or it's a completely replaced block
-			if (i != 0 && cmpInfo.blockDiffs[i - 1].type == diff_type::DIFF_IN_1)
-			{
-				diffInfo& blockDiff1 = cmpInfo.blockDiffs[i - 1];
-				diffInfo& blockDiff2 = cmpInfo.blockDiffs[i];
+			diffInfo& blockDiff1 = cmpInfo.blockDiffs[i - 1];
+			diffInfo& blockDiff2 = cmpInfo.blockDiffs[i];
 
-				blockDiff1.info.matchBlock = &blockDiff2;
-				blockDiff2.info.matchBlock = &blockDiff1;
+			blockDiff1.info.matchBlock = &blockDiff2;
+			blockDiff2.info.matchBlock = &blockDiff1;
 
-				compareBlocks(cmpInfo.doc1, cmpInfo.doc2, blockDiff1, blockDiff2, options);
-			}
+			compareBlocks(cmpInfo.doc1, cmpInfo.doc2, blockDiff1, blockDiff2, options);
 		}
 
 		if (progress && !progress->Advance())
@@ -1303,54 +1362,49 @@ CompareResult runFindUnique(const CompareOptions& options, AlignmentInfo_t& alig
 		doc2.blockDiffMask = MARKER_MASK_REMOVED;
 	}
 
-	std::vector<uint64_t> doc1LineHashes = computeLineHashes(doc1, options);
+	getLines(doc1, options);
 
 	if (progress && !progress->NextPhase())
 		return CompareResult::COMPARE_CANCELLED;
 
-	std::vector<uint64_t> doc2LineHashes = computeLineHashes(doc2, options);
+	getLines(doc2, options);
 
 	if (progress && !progress->NextPhase())
 		return CompareResult::COMPARE_CANCELLED;
 
 	std::unordered_map<uint64_t, std::vector<int>> doc1UniqueLines;
 
-	int docHashesSize = static_cast<int>(doc1LineHashes.size());
-
-	for (int i = 0; i < docHashesSize; ++i)
+	for (const auto& line: doc1.lines)
 	{
-		auto insertPair = doc1UniqueLines.emplace(doc1LineHashes[i], std::vector<int>{i});
+		auto insertPair = doc1UniqueLines.emplace(line.hash, std::vector<int>{line.line});
 		if (!insertPair.second)
-			insertPair.first->second.emplace_back(i);
+			insertPair.first->second.emplace_back(line.line);
 	}
 
-	doc1LineHashes.clear();
+	doc1.lines.clear();
 
 	if (progress && !progress->NextPhase())
 		return CompareResult::COMPARE_CANCELLED;
 
 	std::unordered_map<uint64_t, std::vector<int>> doc2UniqueLines;
 
-	docHashesSize = static_cast<int>(doc2LineHashes.size());
-
-	for (int i = 0; i < docHashesSize; ++i)
+	for (const auto& line: doc2.lines)
 	{
-		auto insertPair = doc2UniqueLines.emplace(doc2LineHashes[i], std::vector<int>{i});
+		auto insertPair = doc2UniqueLines.emplace(line.hash, std::vector<int>{line.line});
 		if (!insertPair.second)
-			insertPair.first->second.emplace_back(i);
+			insertPair.first->second.emplace_back(line.line);
 	}
 
-	doc2LineHashes.clear();
+	doc2.lines.clear();
 
 	if (progress && !progress->NextPhase())
 		return CompareResult::COMPARE_CANCELLED;
 
 	int doc1UniqueLinesCount = 0;
 
-	for (std::unordered_map<uint64_t, std::vector<int>>::iterator doc1it = doc1UniqueLines.begin();
-		doc1it != doc1UniqueLines.end(); ++doc1it)
+	for (const auto& uniqueLine: doc1UniqueLines)
 	{
-		std::unordered_map<uint64_t, std::vector<int>>::iterator doc2it = doc2UniqueLines.find(doc1it->first);
+		auto doc2it = doc2UniqueLines.find(uniqueLine.first);
 
 		if (doc2it != doc2UniqueLines.end())
 		{
@@ -1358,9 +1412,9 @@ CompareResult runFindUnique(const CompareOptions& options, AlignmentInfo_t& alig
 		}
 		else
 		{
-			for (const auto& line: doc1it->second)
+			for (const auto& line: uniqueLine.second)
 			{
-				CallScintilla(doc1.view, SCI_MARKERADDSET, line + doc1.section.off, doc1.blockDiffMask);
+				CallScintilla(doc1.view, SCI_MARKERADDSET, line, doc1.blockDiffMask);
 				++doc1UniqueLinesCount;
 			}
 		}
@@ -1373,7 +1427,7 @@ CompareResult runFindUnique(const CompareOptions& options, AlignmentInfo_t& alig
 	{
 		for (const auto& line: uniqueLine.second)
 		{
-			CallScintilla(doc2.view, SCI_MARKERADDSET, line + doc2.section.off, doc2.blockDiffMask);
+			CallScintilla(doc2.view, SCI_MARKERADDSET, line, doc2.blockDiffMask);
 		}
 	}
 

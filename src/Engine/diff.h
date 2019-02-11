@@ -374,7 +374,7 @@ void DiffCalc<Elem, UserDataT>::_shift_boundaries()
 		if (_diff[i].type == diff_type::DIFF_IN_1)
 		{
 			// If there is DIFF_IN_2 after DIFF_IN_1 both sequences are changed - boundaries do not match for sure
-			if (i + 1 < static_cast<int>(_diff.size()) && _diff[i + 1].type == diff_type::DIFF_IN_2)
+			if ((i + 1 < static_cast<int>(_diff.size())) && (_diff[i + 1].type == diff_type::DIFF_IN_2))
 			{
 				++i;
 				continue;
